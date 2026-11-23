@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <title>CarClimate</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1220;--card:#151f30;--line:#26354d;--sub:#91a0b6;--orange:#ffb37a;--blue:#76baff}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:var(--bg);color:#f5f8ff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    main{max-width:460px;margin:auto;padding:32px 19px 55px}
+    .head{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:22px}
+    h1{font-size:26px;letter-spacing:-1.1px;margin:0;font-weight:750}
+    .sub{color:var(--sub);font-size:13px;margin-top:6px}
+    .status{display:flex;align-items:center;gap:7px;font-size:12px;color:#a5b5c8;margin-top:9px;white-space:nowrap}
+    .dot{height:8px;width:8px;border-radius:50%;background:#ff8585}
+    .status.live .dot{background:#38d9a5;box-shadow:0 0 9px #38d9a570}
+    button{display:block;width:100%;border:0;border-radius:15px;padding:15px 18px;margin:0 0 19px;background:#78b9ff;color:#0c1521;font-weight:750;font-size:15px;cursor:pointer}
+    button:disabled{opacity:.5;cursor:wait}
+    .card{border:1px solid var(--line);background:var(--card);border-radius:23px;padding:23px;margin-bottom:15px}
+    .label{font-weight:650;font-size:12px;letter-spacing:1.05px;color:#a5b7cd}
+    .value{margin:15px 0 4px;font-size:65px;line-height:1.1;font-weight:730;letter-spacing:-3px;font-variant-numeric:tabular-nums}
+    .unit{font-size:27px;font-weight:500;letter-spacing:0;opacity:.75;margin-left:2px}
+    .orange{color:var(--orange)}.blue{color:var(--blue)}
+    .detail{color:#8ea2bd;font-size:12px;line-height:1.5;margin-top:8px}
+    svg{width:100%;height:65px;display:block;margin-top:16px;overflow:visible}
+    svg line{stroke:#30415a;stroke-width:1}svg polyline{fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+    #temperatureGraph{stroke:var(--orange)}#humidityGraph{stroke:var(--blue)}
+    .track{height:9px;background:#304057;border-radius:99px;overflow:hidden;margin-top:18px}
+    .fill{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#428de8,#83caff);transition:width .35s}
+    .tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .tile{border:1px solid var(--line);background:var(--card);border-radius:19px;padding:18px;min-width:0}
+    .number{font-size:26px;font-weight:700;letter-spacing:-1px;margin:13px 0 0;font-variant-numeric:tabular-nums}
+    .foot{color:#70859d;text-align:center;font-size:11px;line-height:1.7;margin-top:25px}
+    #error{color:#ffb0aa;font-size:12px;min-height:16px;margin:-12px 0 16px;word-break:break-word}
+    @media(max-width:350px){.value{font-size:54px}.number{font-size:22px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <div><h1>CarClimate</h1><div class="sub">Interior environment</div></div>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Offline</span></div>
+  </div>
+  <button id="connect">Connect via Bluetooth</button>
+  <div id="error" role="status"></div>
+  <section class="card">
+    <div class="label">TEMPERATURE</div>
+    <div class="value orange"><span id="temp">--.-</span><span class="unit">°C</span></div>
+    <div class="detail">Current cabin temperature</div>
+    <svg viewBox="0 0 300 65" preserveAspectRatio="none" aria-label="Recent temperature trend">
+      <line x1="0" y1="32" x2="300" y2="32"/>
+      <polyline id="temperatureGraph" points=""/>
+    </svg>
+    <div class="detail">Live temperature history</div>
+  </section>
+  <section class="card">
+    <div class="label">HUMIDITY</div>
+    <div class="value blue"><span id="humid">--.-</span><span class="unit">%</span></div>
+    <div class="detail" id="humidityDesc">Waiting for sensor</div>
+    <div class="track"><div class="fill" id="humidityBar"></div></div>
+    <svg viewBox="0 0 300 65" preserveAspectRatio="none" aria-label="Recent humidity trend">
+      <line x1="0" y1="32" x2="300" y2="32"/>
+      <polyline id="humidityGraph" points=""/>
+    </svg>
+    <div class="detail">Live humidity history</div>
+  </section>
+  <div class="tiles">
+    <div class="tile"><div class="label">DEW POINT</div><div class="number" id="dew">--.-°C</div><div class="detail">Calculated</div></div>
+    <div class="tile"><div class="label">LAST UPDATE</div><div class="number" id="updated">--:--</div><div class="detail">Phone time</div></div>
+  </div>
+  <div class="foot">SHT31 SENSOR · BLUETOOTH LE<br>Live readings every 3 seconds while connected.<br>Graphs store values only while this page is open.</div>
+</main>
+<script>
+  'use strict';
+  const SERVICE_UUID='7c8d1000-1234-4567-89ab-123456789abc';
+  const DATA_UUID='7c8d1001-1234-4567-89ab-123456789abc';
+  const $=id=>document.getElementById(id);
+  let device=null, characteristic=null;
+  let tempHistory=[], humidityHistory=[];
+  const MAX_POINTS=120;
+
+  function setStatus(connected,label){
+    $('status').classList.toggle('live',connected);
+    $('statusText').textContent=label;
+    $('connect').textContent=connected?'Disconnect':'Connect via Bluetooth';
+    $('connect').disabled=false;
+  }
+  function disconnect(){
+    if(device && device.gatt && device.gatt.connected) device.gatt.disconnect();
+    characteristic=null;
+    setStatus(false,'Offline');
+  }
+  function drawGraph(id,values){
+    if(!values.length)return;
+    const min=Math.min(...values),max=Math.max(...values),range=Math.max(max-min,1),mid=(max+min)/2;
+    $(id).setAttribute('points',values.map((v,i)=>{
+      const x=values.length===1?150:i*300/(values.length-1);
+      const y=32.5-(v-mid)*51/range;
+      return x.toFixed(1)+','+y.toFixed(1);
+    }).join(' '));
+  }
+  function dewPoint(t,h){
+    if(h<=0 || h>100)return NaN;
+    const a=17.62,b=243.12;
+    const g=Math.log(h/100)+(a*t)/(b+t);
+    return b*g/(a-g);
+  }
+  function handleValue(value){
+    try{
+      const raw=new TextDecoder().decode(value);
+      const parts=raw.trim().split(',');
+      if(parts.length!==2)return;
+      const t=Number(parts[0]),h=Number(parts[1]);
+      if(!Number.isFinite(t)||!Number.isFinite(h)||h<0||h>100)return;
+      $('temp').textContent=t.toFixed(1);
+      $('humid').textContent=h.toFixed(1);
+      $('humidityBar').style.width=h+'%';
+      $('humidityDesc').textContent=h<30?'Dry cabin air':h<=60?'Moderate humidity':'High relative humidity';
+      const dp=dewPoint(t,h);
+      $('dew').textContent=Number.isFinite(dp)?dp.toFixed(1)+'°C':'--.-°C';
+      $('updated').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      tempHistory.push(t);humidityHistory.push(h);
+      if(tempHistory.length>MAX_POINTS)tempHistory.shift();
+      if(humidityHistory.length>MAX_POINTS)humidityHistory.shift();
+      drawGraph('temperatureGraph',tempHistory);
+      drawGraph('humidityGraph',humidityHistory);
+      $('error').textContent='';
+    }catch(e){$('error').textContent='Could not decode sensor data.';}
+  }
+  async function connect(){
+    if(device && device.gatt && device.gatt.connected){disconnect();return;}
+    if(!navigator.bluetooth){
+      $('error').textContent='Open this HTTPS page in Bluefy on your iPhone to use Bluetooth.';
+      return;
+    }
+    $('error').textContent='';
+    $('connect').disabled=true;
+    $('connect').textContent='Connecting…';
+    try{
+      // Must be called directly after a tap, for iOS BLE permissions.
+      device=await navigator.bluetooth.requestDevice({
+        filters:[{namePrefix:'CarClimate'}],
+        optionalServices:[SERVICE_UUID]
+      });
+      device.addEventListener('gattserverdisconnected',()=>{
+        characteristic=null;
+        setStatus(false,'Offline');
+      });
+      const gatt=await device.gatt.connect();
+      const service=await gatt.getPrimaryService(SERVICE_UUID);
+      characteristic=await service.getCharacteristic(DATA_UUID);
+      characteristic.addEventListener('characteristicvaluechanged',evt=>handleValue(evt.target.value));
+      await characteristic.startNotifications();
+      setStatus(true,'Connected');
+      handleValue(await characteristic.readValue());
+    }catch(error){
+      setStatus(false,'Offline');
+      if(error.name!=='NotFoundError')$('error').textContent='Connection error: '+(error.message||String(error));
+    }
+  }
+  $('connect').addEventListener('click',connect);
+  if(!navigator.bluetooth)$('error').textContent='Bluetooth is available when this HTTPS page is opened in Bluefy.';
+</script>
+</body>
+</html>
